@@ -1,0 +1,83 @@
+// DocsMini — real-time collaborative document editor schema
+// Note: SQLite is used in dev. For production PostgreSQL, change the datasource
+// provider to "postgresql" and re-run prisma migrate. The model shapes below are
+// Postgres-compatible (enums modeled as String + app-level validation).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  // Rotating refresh-token family: the currently valid refresh token id (JTI).
+  // On refresh reuse we detect theft and revoke the whole family by clearing it.
+  refreshJti   String?
+  avatarColor  String   @default("#0d9488")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  documents  Document[]
+  versions   DocumentVersion[]
+  presence   ActiveCollaborator[]
+}
+
+model Document {
+  id          String   @id @default(cuid())
+  title       String   @default("بدون عنوان")
+  content     String   @default("")
+  ownerId     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  versions    DocumentVersion[]
+  collaborators ActiveCollaborator[]
+
+  @@index([ownerId])
+}
+
+model DocumentVersion {
+  id         String   @id @default(cuid())
+  documentId String
+  authorId   String
+  content    String
+  title      String
+  // The reason this snapshot was captured: "manual" | "autosave" | "restore"
+  source     String   @default("manual")
+  createdAt  DateTime @default(now())
+
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  author     User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([createdAt])
+}
+
+// Ephemeral presence record. In a multi-instance deployment this would live in
+// Redis; with a single collaboration service we keep it in the DB for simplicity
+// and clear stale rows on disconnect.
+model ActiveCollaborator {
+  id         String   @id @default(cuid())
+  documentId String
+  userId     String
+  // Last cursor position (character offset) reported by the client.
+  cursor     Int      @default(0)
+  // Selection end (== cursor when no selection).
+  selectionEnd Int    @default(0)
+  // Liveness heartbeat; rows older than ~30s are considered stale.
+  lastSeen   DateTime @default(now())
+
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, userId])
+  @@index([documentId])
+}
